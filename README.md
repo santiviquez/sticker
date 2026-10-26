@@ -59,11 +59,12 @@ Open `lab.html` (any static server works, e.g. `python3 -m http.server`). Load y
 | `zIndex` | `40` | where the board sits on your page |
 | `minWidth` | `0` | hide below this window width |
 | `touch` | `true` | show on touch screens |
+| `maxDpr` | `3` | the most pixel density stickers are built at; `2` halves the work on 3x screens |
 | `trash` | `{ enabled: true, size: 150, worn: true }` | the trash can; `worn` also catches stickers that wore out |
 | `onEnter` | `null` | called with the sticker when it comes in at its starting spot |
 | `onStick` | `null` | called with the sticker each time it's stuck down somewhere new |
 
-`board.add(options)` takes `src`, `size`, `tilt`, `at` (CSS-like `left`/`right`/`top`/`bottom`, or `x`/`y` for the centre), `eyes`, `under` (HTML revealed where it started) and groups for `look`, `entrance`, `peel`, `carry` and `glue`. Every option and its default is in `DEFAULTS` at the top of [`sticker/sticker.js`](sticker/sticker.js).
+`board.add(options)` takes `src` (an image URL, or a canvas you've drawn), `size`, `tilt`, `at` (CSS-like `left`/`right`/`top`/`bottom`, or `x`/`y` for the centre), `eyes`, `href` (a link: hovering shows it, a quick click follows it, a drag still peels), `under` (HTML revealed where it started) and groups for `look`, `entrance`, `peel`, `carry` and `glue`. Every option and its default is in `DEFAULTS` at the top of [`sticker/sticker.js`](sticker/sticker.js).
 
 The board also has `show()` (bring the stickers in, for `appear: "manual"`; resolves once they're all in), `reset()` (every sticker fresh, back where it started) and `destroy()`. Set `entrance: { style: "none" }` on a sticker for no entrance animation at all.
 

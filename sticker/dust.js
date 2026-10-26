@@ -109,20 +109,20 @@ export function drawSpeck(ctx, sp, x, y, turn = 0) {
 // being handled and made-up dirt (scaled by `amount`, seeded per level so
 // each keeps the last's), plus any `marks` added from outside.
 export function dirtyBack(art, level, amount = 1, marks = []) {
-  const N = art.back.width;
   const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = N;
+  canvas.width = art.back.width;
+  canvas.height = art.back.height;
   const ctx = canvas.getContext("2d");
   ctx.drawImage(art.back, 0, 0);
   if (level <= 0 && !marks.length) return canvas;
 
   const s = art.size;
   ctx.globalCompositeOperation = "source-atop";
-  ctx.setTransform(art.dpr, 0, 0, art.dpr, art.margin * art.dpr, art.margin * art.dpr);
+  ctx.setTransform(art.dpr, 0, 0, art.dpr, -art.box.x * art.dpr, -art.box.y * art.dpr);
 
   // Duller, dirtier paper overall.
   ctx.fillStyle = `rgba(110,96,78,${Math.min(0.22, 0.035 * level)})`;
-  ctx.fillRect(-art.margin, -art.margin, art.full, art.full);
+  ctx.fillRect(art.box.x, art.box.y, art.box.w, art.box.h);
 
   marks.forEach((sp) => drawSpeck(ctx, sp, sp.lx, sp.ly, sp.turn || 0));
 

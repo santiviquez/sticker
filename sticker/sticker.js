@@ -5,7 +5,7 @@
 //   const board = createBoard();
 //   board.add({ src: "/me.webp", eyes: { left: { x: 0.4, y: 0.36 }, right: { x: 0.59, y: 0.36 } } });
 
-import { buildArt } from "./art.js";
+import { buildArt, loadImage } from "./art.js";
 import { dirtyBack } from "./dust.js";
 import { buildEyes, Googly, blink, pupilTravel } from "./eyes.js";
 import { EASE_OUT, springEasing, clipBox, creaseRuns, fold, reflection, rotate } from "./motion.js";
@@ -20,6 +20,16 @@ const smoothstep = (a, b, x) => {
 };
 const easeOut = (t) => 1 - Math.pow(1 - t, 3);
 
+// Lets the browser get a frame in between stickers without waiting around.
+function yieldToBrowser() {
+  if (globalThis.scheduler?.yield) return globalThis.scheduler.yield();
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => resolve();
+    channel.port2.postMessage(0);
+  });
+}
+
 // Stacking inside the board: stains at the bottom, stickers above in the
 // order they were last stuck, then the trash can and anything in flight.
 const Z_STICKER = 10;
@@ -27,7 +37,10 @@ const Z_CARRIED = 5500;
 
 // Every sticker option, with its default.
 export const DEFAULTS = {
-  src: "",
+  src: "", // an image URL, or a canvas/image you've drawn
+  // A link: shown on hover, followed on a quick click (a drag still peels).
+  href: null,
+  hrefLabel: null, // what the hover label says; defaults to the link itself
   size: 136, // px, the square the image is fitted into
   // Where it starts. Like CSS: left/right/top/bottom place the box's edges
   // (numbers are px, strings any CSS length), or x/y place its centre.
@@ -104,6 +117,7 @@ export const BOARD = {
   appear: "first-move", // or "load", or "manual" (call show())
   minWidth: 0, // hide below this window width
   touch: true, // show on touch screens
+  maxDpr: 3, // build pixels at no more than this density (2 is plenty for many stickers)
   trash: { enabled: true, size: 150, worn: true },
   // Hooks, called with the sticker: when it comes in at its starting spot,
   // and each time it's stuck down somewhere new.
@@ -232,12 +246,23 @@ function createSticker(board, config) {
     unmount();
     const { art, cfg } = st;
     const S = art.size;
-    const m = art.margin;
-    const F = art.full;
-    const artBox = { left: `${-m}px`, top: `${-m}px`, width: `${F}px`, height: `${F}px` };
+    const { box } = art;
+    const artBox = { left: `${box.x}px`, top: `${box.y}px`, width: `${box.w}px`, height: `${box.h}px` };
+    // Silhouette masks (stain, gloss, entrance shadow) are cosmetic, so they
+    // wait for the encoded image instead of holding anything up.
+    const masked = [];
     const mask = (e) => {
       Object.assign(e.style, artBox);
-      e.style.webkitMaskImage = e.style.maskImage = `url(${art.backURL})`;
+      masked.push(e);
+    };
+    // The art itself goes straight onto canvases.
+    const paint = (parent) => {
+      const c = el("canvas", "art", parent);
+      c.width = art.front.width;
+      c.height = art.front.height;
+      c.getContext("2d").drawImage(art.front, 0, 0);
+      Object.assign(c.style, artBox);
+      return c;
     };
     const eyes = eyesCfg();
     const root = board.root;
@@ -269,11 +294,7 @@ function createSticker(board, config) {
     dom.press = el("div", "press", dom.inner);
     dom.press.style.filter = `drop-shadow(0 1px 1px rgba(0,0,0,${cfg.look.shadow})) drop-shadow(0 3px 8px rgba(0,0,0,${cfg.look.shadow * 0.45}))`;
     dom.front = el("div", "fill", dom.press);
-    const img = el("img", "art", dom.front);
-    img.src = art.frontURL;
-    img.alt = "";
-    img.draggable = false;
-    Object.assign(img.style, artBox);
+    paint(dom.front);
     if (cfg.look.gloss > 0) {
       dom.gloss = el("div", "gloss", dom.front);
       mask(dom.gloss);
@@ -289,7 +310,7 @@ function createSticker(board, config) {
     // square), clipped to its hull so the page around it stays clickable.
     dom.hit = el("div", "hit", dom.tilt);
     Object.assign(dom.hit.style, artBox);
-    const hull = `polygon(${art.hull.map(([x, y]) => `${(x + m).toFixed(1)}px ${(y + m).toFixed(1)}px`).join(", ")})`;
+    const hull = `polygon(${art.hull.map(([x, y]) => `${(x - box.x).toFixed(1)}px ${(y - box.y).toFixed(1)}px`).join(", ")})`;
     dom.hit.style.clipPath = dom.hit.style.webkitClipPath = hull;
     board.wireHit(dom.hit);
 
@@ -298,10 +319,7 @@ function createSticker(board, config) {
     Object.assign(dom.flight.style, { width: `${S}px`, height: `${S}px` });
     dom.flightInner = el("div", "flight-inner", dom.flight);
     const ff = el("div", "face", dom.flightInner);
-    const fimg = el("img", "art", ff);
-    fimg.src = art.frontURL;
-    fimg.alt = "";
-    Object.assign(fimg.style, artBox);
+    paint(ff);
     const fface = eyes ? buildEyes(ff, eyes, S) : { eyeEls: [], pupilEls: [] };
     dom.flightEyes = fface.eyeEls;
     dom.flightPupils = fface.pupilEls;
@@ -312,6 +330,9 @@ function createSticker(board, config) {
     for (const k of ["home", "anchor", "flight"]) dom[k].setAttribute("aria-hidden", "true");
     dom.anchor.style.zIndex = st.z;
     st.dom = dom;
+    art.urls.then(({ back }) => {
+      masked.forEach((e) => (e.style.webkitMaskImage = e.style.maskImage = `url(${back})`));
+    });
     eng.rect = null;
     eng.drawn = "";
     render();
@@ -515,7 +536,7 @@ function createSticker(board, config) {
     poly.forEach(([x, y], i) => (i ? o.lineTo(x, y) : o.moveTo(x, y)));
     o.closePath();
     o.clip();
-    o.drawImage(eng.back || art.back, -art.margin, -art.margin, art.full, art.full);
+    o.drawImage(eng.back || art.back, art.box.x, art.box.y, art.box.w, art.box.h);
 
     const center = s / 2;
     const at = g.c - (g.dx + g.dy) * center; // fold position along d
@@ -640,7 +661,8 @@ function createSticker(board, config) {
     const c = st.dom?.flightBack;
     const back = eng.back || st.art?.back;
     if (!c || !back || c.dataset.v === String(eng.backV)) return;
-    c.width = c.height = back.width;
+    c.width = back.width;
+    c.height = back.height;
     c.getContext("2d").drawImage(back, 0, 0);
     c.dataset.v = String(eng.backV);
   }
@@ -925,6 +947,17 @@ function createSticker(board, config) {
     wake();
   }
 
+  // A quick click on a sticker with a link: a little press, then off it goes.
+  function follow() {
+    const { href } = st.cfg;
+    if (!env().reduced) {
+      const { easing, duration } = springEasing(0.35, 0.4);
+      st.dom.press.animate([{ transform: "scale(0.94)" }, { transform: "scale(1)" }], { duration, easing });
+    }
+    if (/^https?:\/\//.test(href)) window.open(href, "_blank", "noopener,noreferrer");
+    else window.location.assign(href);
+  }
+
   function releaseSpeed(d, g, now) {
     const h = d.history;
     const a = h[0];
@@ -1071,7 +1104,10 @@ function createSticker(board, config) {
       eng.drag = null;
       press(false);
       if (!d.moved) {
-        if (e.type === "pointerup" && e.timeStamp - d.t0 < 400) boop();
+        if (e.type === "pointerup" && e.timeStamp - d.t0 < 400) {
+          if (cfg.href) follow();
+          else boop();
+        }
         wake();
         return true;
       }
@@ -1135,6 +1171,15 @@ function createSticker(board, config) {
       st.marks.push(...marks);
       setDust(st.uses);
     },
+    // Roughly where it is on screen: a circle (centre and radius, px) that
+    // holds the whole sticker however it's turned.
+    reach() {
+      if (!st.art || !st.dom) return null;
+      const r = measure();
+      const { box } = st.art;
+      const half = Math.max(-box.x, -box.y, box.x + box.w - st.art.size, box.y + box.h - st.art.size, 0) + st.art.size / 2;
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2, r: half * Math.SQRT2 };
+    },
     // Is this screen point under the sticker where it sits now (any phase)?
     // Returns the point in its own coordinates, or null.
     covers(x, y) {
@@ -1161,7 +1206,7 @@ function createSticker(board, config) {
     },
     // A fresh sticker back where it started.
     enter() {
-      if (!st.art) return;
+      if (!st.art || !st.dom) return;
       if (eng.carry) board.carry(null);
       eng.v = { x: 0, y: 0 };
       eng.vv = { x: 0, y: 0 };
@@ -1182,8 +1227,7 @@ function createSticker(board, config) {
       st.dom.front.style.visibility = "";
       st.dom.front.style.clipPath = st.dom.front.style.webkitClipPath = "";
       setPhase("entering");
-      measure();
-      board.opts.onEnter?.(api);
+      board.entered(api);
       animateEnter();
     },
     // Change options live (the lab does this). Rebuilds pixels when needed.
@@ -1262,15 +1306,30 @@ export function createBoard(options = {}) {
   let scratchCanvas = null;
   let queue = Promise.resolve();
   const fingers = new Set();
+  const entering = [];
 
   const carryLayer = el("div", "carry", root);
   carryLayer.setAttribute("aria-hidden", "true");
+
+  // The label that shows a sticker's link while you hover it.
+  const tip = el("div", "tip", root);
+  tip.setAttribute("aria-hidden", "true");
+  function showTip(sticker, x, y) {
+    const { href, hrefLabel } = sticker?.config || {};
+    if (!href) {
+      tip.dataset.on = false;
+      return;
+    }
+    tip.textContent = `${hrefLabel || href.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "")} ↗`;
+    tip.style.transform = `translate(${Math.round(x + 14)}px, ${Math.round(y + 18)}px)`;
+    tip.dataset.on = true;
+  }
 
   const board = {
     opts,
     root,
     host,
-    env: { reduced: reduced.matches, fine: fine.matches, dpr: Math.min(3, window.devicePixelRatio || 1) },
+    env: { reduced: reduced.matches, fine: fine.matches, dpr: Math.min(opts.maxDpr, window.devicePixelRatio || 1) },
     cursor: null,
     lastMove: 0,
     trail: [],
@@ -1314,6 +1373,20 @@ export function createBoard(options = {}) {
 
     touchDown: () => fingers.size > 0,
 
+    // Stickers that just came in, handed to onEnter together at the next
+    // frame, so the browser measures them all in one layout.
+    entered(sticker) {
+      if (!opts.onEnter) return;
+      entering.push(sticker);
+      if (entering.length === 1) {
+        requestAnimationFrame(() => {
+          const batch = entering.splice(0);
+          batch.forEach((s) => s.measure());
+          batch.forEach((s) => opts.onEnter(s));
+        });
+      }
+    },
+
     catch(x, T, side) {
       if (!opts.trash.enabled) return;
       if (!can) can = buildTrashCan(root, opts.trash.size);
@@ -1352,6 +1425,7 @@ export function createBoard(options = {}) {
     drag = { sticker: s, capture: { el: e.currentTarget, id: e.pointerId } };
     if (hovered && hovered !== s) hovered.input.hover(null);
     hovered = null;
+    showTip(null);
     s.input.down(e);
   }
 
@@ -1361,21 +1435,23 @@ export function createBoard(options = {}) {
       return;
     }
     const s = pick(e.clientX, e.clientY);
-    e.currentTarget.style.cursor = s ? "grab" : "";
+    e.currentTarget.style.cursor = s ? (s.config.href ? "pointer" : "grab") : "";
     if (hovered && hovered !== s) hovered.input.hover(null);
     hovered = s;
     if (s) s.input.hover(e.clientX, e.clientY);
+    showTip(s, e.clientX, e.clientY);
   }
 
   function onHitUp(e) {
     if (!drag) return;
     const s = drag.sticker;
     drag = null;
-    e.currentTarget.style.cursor = "grab";
+    e.currentTarget.style.cursor = s.config.href ? "pointer" : "grab";
     s.input.up(e);
   }
 
   function onHitLeave() {
+    showTip(null);
     if (drag || !hovered) return;
     hovered.input.hover(null);
     hovered = null;
@@ -1425,7 +1501,7 @@ export function createBoard(options = {}) {
   }
 
   function onResize() {
-    board.env.dpr = Math.min(3, window.devicePixelRatio || 1);
+    board.env.dpr = Math.min(opts.maxDpr, window.devicePixelRatio || 1);
     host.hidden = !eligible();
     stickers.forEach((s) => s.onResize());
   }
@@ -1446,7 +1522,11 @@ export function createBoard(options = {}) {
   }
 
   function enterWhenReady(s) {
-    s.ready.then(() => setTimeout(() => s.enter(), s.config.entrance.delay));
+    s.ready.then(() => {
+      const { delay } = s.config.entrance;
+      if (delay > 0) setTimeout(() => s.enter(), delay);
+      else s.enter();
+    });
   }
 
   window.addEventListener("pointermove", onWindowMove, { passive: true });
@@ -1468,27 +1548,23 @@ export function createBoard(options = {}) {
     add(config) {
       const s = createSticker(board, merge(DEFAULTS, config));
       stickers.push(s);
+      // Start downloading now, in parallel; the pixels are built in turn below.
+      loadImage(config.src).catch(() => null);
       order += 1;
       const z = order;
-      // Pixels are built one sticker at a time, when the browser is idle.
-      s.ready = queue = queue.then(
-        () =>
-          new Promise((resolve) => {
-            const run = () =>
-              s
-                .prepare()
-                .then(() => {
-                  s.setZ(Z_STICKER + z);
-                  resolve(s);
-                })
-                .catch((err) => {
-                  console.warn("[sticker]", config.src, err);
-                  resolve(s);
-                });
-            if (window.requestIdleCallback) window.requestIdleCallback(run, { timeout: 500 });
-            else setTimeout(run, 1);
-          })
-      );
+      // Pixels are built one sticker at a time, yielding in between so the
+      // page stays responsive.
+      s.ready = queue = queue
+        .then(yieldToBrowser)
+        .then(() => s.prepare())
+        .then(() => {
+          s.setZ(Z_STICKER + z);
+          return s;
+        })
+        .catch((err) => {
+          console.warn("[sticker]", config.src, err);
+          return s;
+        });
       if (armed) enterWhenReady(s);
       return s;
     },
@@ -1500,7 +1576,7 @@ export function createBoard(options = {}) {
     },
     // Every sticker fresh, back where it started.
     reset() {
-      stickers.forEach((s) => s.ready.then(() => setTimeout(() => s.enter(), s.config.entrance.delay)));
+      stickers.forEach(enterWhenReady);
       armed = true;
     },
     // The trash can on its own, for tuning.

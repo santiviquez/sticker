@@ -299,8 +299,9 @@ export function mountLab({ panel, stage, board, sticker }) {
       backColor: cfg.peel.backColor,
       filter: cfg.look.filter,
     });
-    img.src = art.frontURL;
-    Object.assign(img.style, { left: `${-art.margin}px`, top: `${-art.margin}px`, width: `${art.full}px`, height: `${art.full}px` });
+    art.urls.then(({ front }) => (img.src = front));
+    const { box } = art;
+    Object.assign(img.style, { left: `${box.x}px`, top: `${box.y}px`, width: `${box.w}px`, height: `${box.h}px` });
   }
 
   function drag(kind) {

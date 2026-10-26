@@ -148,6 +148,27 @@ export const CSS = `
   display: block;
 }
 
+/* A sticker's link, next to the cursor while you hover it. */
+.tip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 5600;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(17, 17, 17, 0.9);
+  color: #fff;
+  font: 500 12px/1 var(--sticker-font, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+
+.tip[data-on="true"] {
+  opacity: 1;
+}
+
 /* The copy that rides on the cursor and tumbles away. */
 .flight {
   position: fixed;
