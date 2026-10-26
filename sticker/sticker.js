@@ -842,7 +842,7 @@ function createSticker(board, config) {
     fall(pose, { x: dir.x * 0.06, y: 0.02 }, 0.12 * DEG * side, cfg.peel.flipSpeed * 0.6 * side, trash.enabled && trash.worn);
   }
 
-  // Ripped off by a finger that let go: thrown away.
+  // Ripped off by a finger that let go: thrown away, into the trash.
   function launch(g, speed) {
     const { cfg } = st;
     const pose = foldPose(g);
@@ -850,7 +850,8 @@ function createSticker(board, config) {
     const v0 = clamp(speed * 0.6, 0.3, 1.1);
     leave();
     setPhase("gone");
-    fall(pose, { x: dir.x * v0, y: dir.y * v0 - 0.35 }, cfg.peel.spin * DEG * (dir.x >= 0 ? 1 : -1), cfg.peel.flipSpeed, false);
+    const spin = cfg.peel.spin * DEG * (dir.x >= 0 ? 1 : -1);
+    fall(pose, { x: dir.x * v0, y: dir.y * v0 - 0.35 }, spin, cfg.peel.flipSpeed, board.opts.trash.enabled);
   }
 
   // Free flight under gravity, tumbling and flipping: into the trash can, or
