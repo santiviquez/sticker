@@ -5,7 +5,7 @@
 //   const board = createBoard();
 //   board.add({ src: "/me.webp", eyes: { left: { x: 0.4, y: 0.36 }, right: { x: 0.59, y: 0.36 } } });
 
-import { buildArt, loadImage } from "./art.js";
+import { buildArt, castShadow, loadImage } from "./art.js";
 import { dirtyBack } from "./dust.js";
 import { buildEyes, Googly, blink, pupilTravel } from "./eyes.js";
 import { EASE_OUT, springEasing, clipBox, creaseRuns, fold, reflection, rotate } from "./motion.js";
@@ -34,6 +34,18 @@ function yieldToBrowser() {
 // order they were last stuck, then the trash can and anything in flight.
 const Z_STICKER = 10;
 const Z_CARRIED = 5500;
+// How far below a sticker in the air its shadow falls, in px.
+const FLIGHT_SHADOW_Y = 14;
+
+// A stuck sticker's shadow: tight contact under a softer spread.
+const pressShadow = (cfg) => [
+  { y: 1, blur: 1, alpha: cfg.look.shadow },
+  { y: 3, blur: 8, alpha: cfg.look.shadow * 0.45 },
+];
+const pressFilter = (cfg) =>
+  pressShadow(cfg)
+    .map((l) => `drop-shadow(0 ${l.y}px ${l.blur}px rgba(0,0,0,${l.alpha}))`)
+    .join(" ");
 
 // Every sticker option, with its default.
 export const DEFAULTS = {
@@ -289,10 +301,15 @@ function createSticker(board, config) {
     mask(dom.airShape);
     dom.enter = el("div", "enter", dom.tilt);
     dom.inner = el("div", "fill", dom.enter);
-    // The shadow sits outside the peel clip so it follows the stuck part's
-    // outline instead of being cut at the fold.
     dom.press = el("div", "press", dom.inner);
-    dom.press.style.filter = `drop-shadow(0 1px 1px rgba(0,0,0,${cfg.look.shadow})) drop-shadow(0 3px 8px rgba(0,0,0,${cfg.look.shadow * 0.45}))`;
+    // Its shadow, blurred once. While it's being peeled a live drop-shadow
+    // takes over instead: it sits outside the peel clip, so it follows the
+    // stuck part's outline rather than being cut at the fold.
+    const shade = castShadow(art, pressShadow(cfg));
+    dom.shadow = shade.canvas;
+    dom.shadow.className = "art";
+    Object.assign(dom.shadow.style, { left: `${shade.x}px`, top: `${shade.y}px`, width: `${shade.w}px`, height: `${shade.h}px` });
+    dom.press.append(dom.shadow);
     dom.front = el("div", "fill", dom.press);
     paint(dom.front);
     if (cfg.look.gloss > 0) {
@@ -314,20 +331,7 @@ function createSticker(board, config) {
     dom.hit.style.clipPath = dom.hit.style.webkitClipPath = hull;
     board.wireHit(dom.hit);
 
-    // The copy that rides on the cursor and tumbles away.
-    dom.flight = el("div", "flight", root);
-    Object.assign(dom.flight.style, { width: `${S}px`, height: `${S}px` });
-    dom.flightInner = el("div", "flight-inner", dom.flight);
-    const ff = el("div", "face", dom.flightInner);
-    paint(ff);
-    const fface = eyes ? buildEyes(ff, eyes, S) : { eyeEls: [], pupilEls: [] };
-    dom.flightEyes = fface.eyeEls;
-    dom.flightPupils = fface.pupilEls;
-    const fb = el("div", "face face-back", dom.flightInner);
-    dom.flightBack = el("canvas", "art", fb);
-    Object.assign(dom.flightBack.style, artBox);
-
-    for (const k of ["home", "anchor", "flight"]) dom[k].setAttribute("aria-hidden", "true");
+    for (const k of ["home", "anchor"]) dom[k].setAttribute("aria-hidden", "true");
     dom.anchor.style.zIndex = st.z;
     st.dom = dom;
     art.urls.then(({ back }) => {
@@ -340,8 +344,55 @@ function createSticker(board, config) {
 
   function unmount() {
     if (!st.dom) return;
-    for (const k of ["home", "anchor", "flight"]) st.dom[k].remove();
+    for (const k of ["home", "anchor", "flight", "flightShade"]) st.dom[k]?.remove();
     st.dom = null;
+  }
+
+  // The copy that rides on the cursor and tumbles away, with its own shadow
+  // underneath (blurred once, then only moved). Built the first time it's
+  // needed: most stickers never leave their spot.
+  function ensureFlight() {
+    const { dom, art } = st;
+    if (dom.flight) return;
+    const S = art.size;
+    const { box } = art;
+    const artBox = { left: `${box.x}px`, top: `${box.y}px`, width: `${box.w}px`, height: `${box.h}px` };
+    const root = board.root;
+    const frame = (cls) => {
+      const outer = el("div", cls, root);
+      Object.assign(outer.style, { width: `${S}px`, height: `${S}px` });
+      outer.setAttribute("aria-hidden", "true");
+      return [outer, el("div", "flight-inner", outer)];
+    };
+    [dom.flightShade, dom.flightShadeInner] = frame("flight flight-shade");
+    const shade = castShadow(art, [{ y: 0, blur: 16, alpha: 0.22 }], 0.5);
+    shade.canvas.className = "art";
+    Object.assign(shade.canvas.style, { left: `${shade.x}px`, top: `${shade.y}px`, width: `${shade.w}px`, height: `${shade.h}px` });
+    dom.flightShadeInner.append(shade.canvas);
+
+    [dom.flight, dom.flightInner] = frame("flight");
+    const ff = el("div", "face", dom.flightInner);
+    const c = el("canvas", "art", ff);
+    c.width = art.front.width;
+    c.height = art.front.height;
+    c.getContext("2d").drawImage(art.front, 0, 0);
+    Object.assign(c.style, artBox);
+    const eyes = eyesCfg();
+    const fface = eyes ? buildEyes(ff, eyes, S) : { eyeEls: [], pupilEls: [] };
+    dom.flightEyes = fface.eyeEls;
+    dom.flightPupils = fface.pupilEls;
+    const fb = el("div", "face face-back", dom.flightInner);
+    dom.flightBack = el("canvas", "art", fb);
+    Object.assign(dom.flightBack.style, artBox);
+  }
+
+  // Both flying layers at once: the copy, and its shadow a little below it.
+  function showFlight(z) {
+    const { dom } = st;
+    for (const e of [dom.flightShade, dom.flight]) {
+      e.style.zIndex = z;
+      e.style.visibility = "visible";
+    }
   }
 
   function render() {
@@ -384,7 +435,7 @@ function createSticker(board, config) {
     const eyes = eyesCfg();
     const { phase, dom } = st;
     if (!eyes || !dom || (phase !== "stuck" && phase !== "carried")) return;
-    const els = phase === "carried" ? dom.flightEyes : dom.eyes;
+    const els = (phase === "carried" ? dom.flightEyes : dom.eyes) || [];
     const wait = eyes.blinkMin + Math.random() * Math.max(0, eyes.blinkMax - eyes.blinkMin);
     eng.blinkTimer = setTimeout(() => {
       if (!document.hidden) {
@@ -501,6 +552,11 @@ function createSticker(board, config) {
     }
     dom.front.style.clipPath = clip;
     dom.front.style.webkitClipPath = clip;
+    if (!!g !== !!dom.peeling) {
+      dom.peeling = !!g;
+      dom.press.style.filter = g ? pressFilter(st.cfg) : "";
+      dom.shadow.style.visibility = g ? "hidden" : "";
+    }
     drawFlap(g);
   }
 
@@ -529,9 +585,10 @@ function createSticker(board, config) {
     const o = off.getContext("2d");
     o.setTransform(1, 0, 0, 1, 0, 0);
     o.clearRect(0, 0, W, W);
+    const m = reflection(g);
     o.save();
     o.setTransform(dpr, 0, 0, dpr, s * dpr, s * dpr);
-    o.transform(...reflection(g));
+    o.transform(...m);
     o.beginPath();
     poly.forEach(([x, y], i) => (i ? o.lineTo(x, y) : o.moveTo(x, y)));
     o.closePath();
@@ -584,11 +641,30 @@ function createSticker(board, config) {
       ctx.restore();
     }
 
+    // Only the flap's own box is copied over: the shadow's blur costs by the
+    // area drawn, and the flap is a small part of the canvas.
+    let x0 = W;
+    let y0 = W;
+    let x1 = 0;
+    let y1 = 0;
+    for (const [x, y] of poly) {
+      const X = (m[0] * x + m[2] * y + m[4] + s) * dpr;
+      const Y = (m[1] * x + m[3] * y + m[5] + s) * dpr;
+      x0 = Math.min(x0, X);
+      y0 = Math.min(y0, Y);
+      x1 = Math.max(x1, X);
+      y1 = Math.max(y1, Y);
+    }
+    x0 = Math.max(0, Math.floor(x0) - 1);
+    y0 = Math.max(0, Math.floor(y0) - 1);
+    const bw = Math.min(W, Math.ceil(x1) + 1) - x0;
+    const bh = Math.min(W, Math.ceil(y1) + 1) - y0;
+    if (bw <= 0 || bh <= 0) return;
     ctx.save();
     ctx.shadowColor = `rgba(0,0,0,${cfg.peel.flapShadow})`;
     ctx.shadowBlur = 6 * dpr;
     ctx.shadowOffsetY = 2 * dpr;
-    ctx.drawImage(off, 0, 0);
+    ctx.drawImage(off, x0, y0, bw, bh, x0, y0, bw, bh);
     ctx.restore();
   }
 
@@ -650,10 +726,13 @@ function createSticker(board, config) {
   }
 
   function placeFlight(p) {
-    const { flight, flightInner } = st.dom;
+    const { flight, flightInner, flightShade, flightShadeInner } = st.dom;
     const s = size();
-    flight.style.transform = `translate(${(p.x - s / 2).toFixed(2)}px, ${(p.y - s / 2).toFixed(2)}px) rotate(${p.angle.toFixed(4)}rad)`;
-    flightInner.style.transform = `perspective(${s * 6}px) rotateY(${p.flip.toFixed(2)}deg) scale(${p.scale.toFixed(3)})`;
+    const at = (dy) => `translate(${(p.x - s / 2).toFixed(2)}px, ${(p.y - s / 2 + dy).toFixed(2)}px) rotate(${p.angle.toFixed(4)}rad)`;
+    const turn = `perspective(${s * 6}px) rotateY(${p.flip.toFixed(2)}deg) scale(${p.scale.toFixed(3)})`;
+    flight.style.transform = at(0);
+    flightShade.style.transform = at(FLIGHT_SHADOW_Y);
+    flightInner.style.transform = flightShadeInner.style.transform = turn;
   }
 
   // The flying copy's paper side, dirt and all.
@@ -669,10 +748,11 @@ function createSticker(board, config) {
 
   function hideFlight() {
     const { dom } = st;
-    if (!dom) return;
-    dom.flight.style.visibility = "hidden";
-    dom.flight.getAnimations().forEach((a) => a.cancel());
-    dom.flightInner.getAnimations().forEach((a) => a.cancel());
+    if (!dom?.flight) return;
+    dom.flight.style.visibility = dom.flightShade.style.visibility = "hidden";
+    for (const e of [dom.flight, dom.flightInner, dom.flightShade, dom.flightShadeInner]) {
+      e.getAnimations().forEach((a) => a.cancel());
+    }
   }
 
   // Fully peeled: it flips face up and stays stuck to the cursor (or finger),
@@ -700,12 +780,12 @@ function createSticker(board, config) {
       touch: eng.pointerType === "touch",
     };
     leave();
+    ensureFlight();
     hideFlight();
     paintBack();
     eng.googly.apply(st.dom.flightPupils);
     placeFlight(pose);
-    st.dom.flight.style.zIndex = Z_CARRIED;
-    st.dom.flight.style.visibility = "visible";
+    showFlight(Z_CARRIED);
     board.carry(api);
     setPhase("carried");
     wake();
@@ -890,6 +970,7 @@ function createSticker(board, config) {
 
     const N = 60;
     const outerFrames = [];
+    const shadeFrames = [];
     const innerFrames = [];
     for (let i = 0; i <= N; i++) {
       const t = (D * i) / N;
@@ -914,22 +995,23 @@ function createSticker(board, config) {
         if (t > D * 0.88) opacity = 1 - (t - D * 0.88) / (D * 0.12);
       }
       const turn = intoTrash ? spin * t * (1 - (0.5 * Math.min(t, T)) / T) : spin * t;
-      outerFrames.push({
-        transform: `translate(${(x - s / 2).toFixed(2)}px, ${(y - s / 2).toFixed(2)}px) rotate(${(pose.angle + turn).toFixed(4)}rad)`,
-        opacity,
-      });
+      const rot = `rotate(${(pose.angle + turn).toFixed(4)}rad)`;
+      outerFrames.push({ transform: `translate(${(x - s / 2).toFixed(2)}px, ${(y - s / 2).toFixed(2)}px) ${rot}`, opacity });
+      shadeFrames.push({ transform: `translate(${(x - s / 2).toFixed(2)}px, ${(y - s / 2 + FLIGHT_SHADOW_Y).toFixed(2)}px) ${rot}`, opacity });
       innerFrames.push({
         transform: `perspective(${s * 6}px) rotateY(${(pose.flip + flipRate * t).toFixed(2)}deg) scale(${scale.toFixed(3)})`,
       });
     }
-    dom.flight.getAnimations().forEach((a) => a.cancel());
-    dom.flightInner.getAnimations().forEach((a) => a.cancel());
+    ensureFlight();
+    hideFlight();
     paintBack();
     eng.googly.apply(dom.flightPupils);
-    dom.flight.style.zIndex = Z.falling;
-    dom.flight.style.visibility = "visible";
-    const a = dom.flight.animate(outerFrames, { duration: D, fill: "forwards" });
-    dom.flightInner.animate(innerFrames, { duration: D, fill: "forwards" });
+    showFlight(Z.falling);
+    const timing = { duration: D, fill: "forwards" };
+    const a = dom.flight.animate(outerFrames, timing);
+    dom.flightShade.animate(shadeFrames, timing);
+    dom.flightInner.animate(innerFrames, timing);
+    dom.flightShadeInner.animate(innerFrames, timing);
     a.onfinish = hideFlight;
   }
 
@@ -1242,6 +1324,11 @@ function createSticker(board, config) {
       if (pixels) await api.prepare();
       else mount();
       if (st.phase === "carried" || st.phase === "gone") st.dom.front.style.visibility = "hidden";
+      if (st.phase === "carried") {
+        ensureFlight();
+        paintBack();
+        showFlight(Z_CARRIED);
+      }
       wake();
     },
     stick,

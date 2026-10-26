@@ -176,7 +176,6 @@ export const CSS = `
   left: 0;
   visibility: hidden;
   pointer-events: none;
-  filter: drop-shadow(0 14px 16px rgba(0, 0, 0, 0.22));
 }
 
 .flight-inner {

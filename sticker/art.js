@@ -16,7 +16,8 @@ export function loadImage(src) {
         img.decoding = "async";
         // Canvas pixels are needed, so cross-origin images must allow CORS.
         img.crossOrigin = "anonymous";
-        img.onload = () => resolve(img);
+        // Decoded off the main thread before anything draws it.
+        img.onload = () => img.decode().then(() => resolve(img), () => resolve(img));
         img.onerror = reject;
         img.src = src;
       })
@@ -312,4 +313,28 @@ export async function buildArt({
       return cut[py * NX + px] >= 128;
     },
   };
+}
+
+// A soft shadow of the cut shape, blurred once into a canvas, so moving or
+// repainting the sticker never has to blur it again (a CSS drop-shadow does,
+// every time anything inside it changes). `layers` are like drop-shadows:
+// [{ y, blur, alpha }]. Drawn at `scale` device px per CSS px; returns the
+// canvas and where it sits relative to the image square, in CSS px.
+export function castShadow(art, layers, scale = 1) {
+  const pad = Math.ceil(Math.max(...layers.map((l) => l.blur * 1.5 + Math.abs(l.y))));
+  const { box } = art;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil((box.w + 2 * pad) * scale);
+  canvas.height = Math.ceil((box.h + 2 * pad) * scale);
+  const ctx = canvas.getContext("2d");
+  // Drawn far off to the side so only the shadow lands on the canvas.
+  const far = canvas.width + 50;
+  for (const l of layers) {
+    ctx.shadowColor = `rgba(0,0,0,${l.alpha})`;
+    ctx.shadowBlur = l.blur * scale;
+    ctx.shadowOffsetX = far;
+    ctx.shadowOffsetY = l.y * scale;
+    ctx.drawImage(art.back, pad * scale - far, pad * scale, box.w * scale, box.h * scale);
+  }
+  return { canvas, x: box.x - pad, y: box.y - pad, w: box.w + 2 * pad, h: box.h + 2 * pad };
 }
